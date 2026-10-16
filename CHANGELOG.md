@@ -21,6 +21,10 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 <!-- skipped: v0.1.25 -->
 <!-- skipped: v0.1.8 -->
 
+## Local additions
+
+- Show global `~/.workmux/todos.json` items in a collapsible sidebar footer; press `T` to toggle it without affecting upstream grouping.
+
 ## v0.1.276 (2026-10-14)
 
 - Fix sidebar sizing and preserve content pane proportions when opening or closing the sidebar on tmux 3.8. ([#325](https://github.com/raine/workmux/issues/325))

@@ -492,6 +492,22 @@ pub fn render_sidebar(f: &mut Frame, app: &mut SidebarApp) {
         }
         _ => (inner, None),
     };
+    let todo_height = app
+        .todo_panel
+        .height(list_area.width)
+        .min(list_area.height.saturating_sub(todo_list_min_height(app)));
+    let todo_area = Rect::new(
+        list_area.x,
+        list_area.bottom() - todo_height,
+        list_area.width,
+        todo_height,
+    );
+    let list_area = Rect::new(
+        list_area.x,
+        list_area.y,
+        list_area.width,
+        list_area.height - todo_height,
+    );
     app.list_area = list_area;
 
     match app.layout_mode {
@@ -499,12 +515,53 @@ pub fn render_sidebar(f: &mut Frame, app: &mut SidebarApp) {
         SidebarLayoutMode::Tiles => render_tile_list(f, app, list_area),
     }
 
+    app.todo_panel.render(f, todo_area, &app.palette);
+
     if let (Some(rect), Some(line)) = (filter_area, footer) {
         f.render_widget(line, rect);
     }
 
     render_help(f, app);
     render_exit_confirmation(f, app);
+}
+
+/// Leave room for a complete tile before giving space to the TODO footer.
+fn todo_list_min_height(app: &SidebarApp) -> u16 {
+    let row = app.viewport_selection().unwrap_or(0);
+    let Some(entry) = app.rows.get(row) else {
+        return 0;
+    };
+    if app.layout_mode == SidebarLayoutMode::Compact {
+        return 1;
+    }
+    let height = app
+        .tile_heights
+        .get(row)
+        .copied()
+        .unwrap_or_else(|| match entry {
+            SidebarRow::Agent(idx) => {
+                let collapsed = app.renders_collapsed(&app.agents[*idx]);
+                let body = if collapsed {
+                    1
+                } else {
+                    app.templates
+                        .tiles
+                        .iter()
+                        .filter(|line| !is_blank_template_line(line))
+                        .count()
+                        .max(1)
+                };
+                let separator = row.checked_sub(1).is_some_and(|prev| match app.rows[prev] {
+                    SidebarRow::Agent(prev_idx) => {
+                        !(collapsed && app.renders_collapsed(&app.agents[prev_idx]))
+                    }
+                    _ => false,
+                });
+                body + usize::from(separator) + usize::from(row + 1 == app.rows.len())
+            }
+            _ => 2,
+        });
+    height.min(u16::MAX as usize) as u16
 }
 
 /// Keys the sidebar answers to, paired with what they do. Keys that only act
@@ -530,6 +587,7 @@ fn help_entries(app: &SidebarApp) -> Vec<(&'static str, &'static str)> {
     }
     entries.extend([
         ("t", "grouping"),
+        ("T", "TODO footer"),
         ("v", "layout"),
         ("f", "session filter"),
         ("z", "sleep"),
@@ -2190,6 +2248,142 @@ mod tests {
         assert!(text.contains("sidebar-groups"));
         assert!((0..12).any(|y| app.hit_test(1, y) == Some(5)));
         assert_eq!(app.hit_test(1, 11), None);
+    }
+
+    #[test]
+    fn todo_footer_is_fixed_below_agents_and_limits_visible_items() {
+        let mut app = tile_app();
+        app.agents.truncate(1);
+        app.rebuild_rows();
+        app.list_state.select(Some(0));
+        app.todo_panel = super::super::todo::TodoPanel::with_items(&[
+            "Review API",
+            "Run tests",
+            "Update docs",
+            "Ship release",
+            "Notify team",
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(36, 12)).unwrap();
+
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+
+        let rows: Vec<String> = (0..12)
+            .map(|y| buffer_row(terminal.backend().buffer(), y))
+            .collect();
+        assert!(rows[7].contains("TODO 5"));
+        assert!(rows[8].contains("Review API"));
+        assert!(rows[9].contains("Run tests"));
+        assert!(rows[10].contains("Update docs"));
+        assert!(rows[11].contains("+2 more"));
+        assert_eq!(app.hit_test(1, 8), None);
+    }
+
+    #[test]
+    fn todo_footer_wraps_each_item_to_two_rows() {
+        let mut app = tile_app();
+        app.agents.truncate(1);
+        app.rebuild_rows();
+        app.list_state.select(Some(0));
+        app.todo_panel = super::super::todo::TodoPanel::with_items(&[
+            "这是一个很长的待办事项，需要自动换行并省略后续内容",
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+
+        let rows: Vec<String> = (0..8)
+            .map(|y| buffer_row(terminal.backend().buffer(), y))
+            .collect();
+        assert!(rows[5].contains("TODO 1"));
+        assert!(rows[6].contains('这'));
+        assert!(rows[6].contains('待'));
+        assert!(rows[7].contains('…'));
+    }
+
+    #[test]
+    fn todo_footer_respects_configured_visible_limit() {
+        let mut app = tile_app();
+        app.agents.truncate(1);
+        app.rebuild_rows();
+        app.list_state.select(Some(0));
+        app.todo_panel =
+            super::super::todo::TodoPanel::with_items(&["One", "Two", "Three", "Four"]);
+        app.todo_panel.max_visible = 2;
+        app.todo_panel.max_lines_per_item = 1;
+        let mut terminal = Terminal::new(TestBackend::new(36, 10)).unwrap();
+
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+
+        let text = (0..10)
+            .map(|y| buffer_row(terminal.backend().buffer(), y))
+            .collect::<String>();
+        assert!(text.contains("One"));
+        assert!(text.contains("Two"));
+        assert!(!text.contains("Three"));
+        assert!(text.contains("+2 more"));
+    }
+
+    #[test]
+    fn collapsed_todo_footer_uses_one_row() {
+        let mut app = tile_app();
+        app.agents.truncate(1);
+        app.rebuild_rows();
+        app.list_state.select(Some(0));
+        app.todo_panel = super::super::todo::TodoPanel::with_items(&["Review API", "Run tests"]);
+        app.todo_panel.expanded = false;
+        let mut terminal = Terminal::new(TestBackend::new(36, 8)).unwrap();
+
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+
+        assert!(buffer_row(terminal.backend().buffer(), 7).contains("TODO 2"));
+        assert!(!buffer_row(terminal.backend().buffer(), 7).contains("Review API"));
+    }
+
+    #[test]
+    fn todo_footer_yields_to_the_selected_tile_in_short_sidebars() {
+        let mut app = tile_app();
+        app.agents.truncate(1);
+        app.rebuild_rows();
+        app.list_state.select(Some(0));
+        app.todo_panel =
+            super::super::todo::TodoPanel::with_items(&["Review API", "Run tests", "Update docs"]);
+        let mut terminal = Terminal::new(TestBackend::new(36, 4)).unwrap();
+
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+
+        let text = (0..4)
+            .map(|y| buffer_row(terminal.backend().buffer(), y))
+            .collect::<String>();
+        assert!(text.contains("auth-refresh"));
+        assert!(!text.contains("TODO"));
+    }
+
+    #[test]
+    fn todo_footer_preserves_grouped_agents_and_session_footer() {
+        let mut app = grouped_tile_app();
+        app.filter_mode = SidebarFilterMode::Session;
+        app.todo_panel = super::super::todo::TodoPanel::with_items(&["Review API"]);
+
+        let lines = rendered(&mut app, 36, 16);
+
+        assert!(lines.iter().any(|line| line.trim().starts_with("api")));
+        assert!(lines.iter().any(|line| line.contains("auth-refresh")));
+        assert!(lines[13].contains("TODO 1"));
+        assert!(lines[14].contains("Review API"));
+        assert_eq!(lines[15].trim(), "[session]");
+        assert_eq!(app.hit_test(1, 14), None);
+    }
+
+    #[test]
+    fn top_bar_does_not_display_global_todos() {
+        let mut app = tile_app();
+        app.position = crate::config::SidebarPosition::Top;
+        app.todo_panel = super::super::todo::TodoPanel::with_items(&["Review API"]);
+
+        let text = rendered(&mut app, 80, 3).join("\n");
+
+        assert!(!text.contains("TODO"));
+        assert!(!text.contains("Review API"));
     }
 
     #[test]

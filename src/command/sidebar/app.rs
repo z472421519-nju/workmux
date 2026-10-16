@@ -27,6 +27,7 @@ use crate::ui::theme::ThemePalette;
 
 use super::snapshot::{SidebarSnapshot, group_label};
 use super::template::parser::{ParseError, Token, TokenId, parse_line};
+use super::todo::TodoPanel;
 
 /// Sidebar layout mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -376,6 +377,8 @@ pub struct SidebarApp {
     suppress_resize_once: bool,
     /// Filter mode: show all agents or only those in the host tmux session.
     pub filter_mode: SidebarFilterMode,
+    /// Global TODO footer shared through ~/.workmux/todos.json.
+    pub(super) todo_panel: TodoPanel,
 }
 
 fn detect_terminal_theme_mode() -> ThemeMode {
@@ -455,6 +458,7 @@ impl SidebarApp {
             resize_deadline: None,
             suppress_resize_once: false,
             filter_mode: SidebarFilterMode::default(),
+            todo_panel: TodoPanel::default(),
         }
     }
 
@@ -546,6 +550,7 @@ impl SidebarApp {
             resize_deadline: None,
             suppress_resize_once: false,
             filter_mode: SidebarFilterMode::default(),
+            todo_panel: TodoPanel::default(),
         })
     }
 
@@ -676,6 +681,7 @@ impl SidebarApp {
         self.select_agent(restored_agent);
 
         self.sync_selection();
+        self.todo_panel.sync(false);
     }
 
     /// Select the agent belonging to this sidebar's host window (only in FollowHost mode).
@@ -814,8 +820,15 @@ impl SidebarApp {
         self.host_window_active
     }
 
+    pub fn toggle_todos(&mut self) {
+        self.todo_panel.toggle();
+    }
+
     pub fn tick(&mut self) {
         self.spinner_frame = self.spinner_frame.wrapping_add(1) % 10;
+        if self.position == SidebarPosition::Left {
+            self.todo_panel.sync(false);
+        }
     }
 
     /// Conservative refresh interval for state that can produce time-dependent content.
@@ -823,24 +836,32 @@ impl SidebarApp {
         const ANIMATION_INTERVAL: Duration = Duration::from_millis(250);
         const ELAPSED_INTERVAL: Duration = Duration::from_secs(1);
 
-        if !self.has_loaded_snapshot
-            || (self.status_icons.working.is_none()
-                && self
-                    .agents
+        let animation_interval =
+            if !self.has_loaded_snapshot
+                || (self.status_icons.working.is_none()
+                    && self.agents.iter().any(|agent| {
+                        agent.status == Some(crate::multiplexer::AgentStatus::Working)
+                    }))
+                || self.check_statuses.values().any(|summary| {
+                    matches!(summary.state, crate::github::CheckState::Pending { .. })
+                })
+            {
+                Some(ANIMATION_INTERVAL)
+            } else {
+                self.agents
                     .iter()
-                    .any(|agent| agent.status == Some(crate::multiplexer::AgentStatus::Working)))
-            || self
-                .check_statuses
-                .values()
-                .any(|summary| matches!(summary.state, crate::github::CheckState::Pending { .. }))
-        {
-            return Some(ANIMATION_INTERVAL);
-        }
+                    .any(|agent| agent.status_ts.is_some())
+                    .then_some(ELAPSED_INTERVAL)
+            };
 
-        self.agents
-            .iter()
-            .any(|agent| agent.status_ts.is_some())
-            .then_some(ELAPSED_INTERVAL)
+        let todo_interval = (self.position == SidebarPosition::Left).then_some(ELAPSED_INTERVAL);
+
+        match (animation_interval, todo_interval) {
+            (Some(animation), Some(todo)) => Some(animation.min(todo)),
+            (Some(animation), None) => Some(animation),
+            (None, Some(todo)) => Some(todo),
+            (None, None) => None,
+        }
     }
 
     /// Rebuild presentation rows from the current (already filtered) agents.
@@ -2331,12 +2352,22 @@ mod tests {
     }
 
     #[test]
-    fn static_loaded_sidebar_has_no_periodic_refresh() {
+    fn static_left_sidebar_still_polls_global_todos() {
         let app = SidebarApp::test_with_template_error(TemplateError {
             location: String::new(),
             message: String::new(),
         });
 
+        assert_eq!(app.refresh_interval(), Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn top_sidebar_does_not_poll_global_todos() {
+        let mut app = SidebarApp::test_with_template_error(TemplateError {
+            location: String::new(),
+            message: String::new(),
+        });
+        app.position = SidebarPosition::Top;
         assert_eq!(app.refresh_interval(), None);
     }
 

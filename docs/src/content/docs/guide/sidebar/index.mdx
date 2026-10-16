@@ -303,6 +303,7 @@ it the way you move to any tmux pane, or click it.
 | `v`     | Toggle layout mode        |
 | `f`     | Toggle session filter     |
 | `t`     | Toggle grouping           |
+| `T`     | Collapse/expand TODOs     |
 | `h`/`l` | Unfold/fold current group |
 | `s`     | Toggle the current fold   |
 | `S`     | Fold/unfold every group   |
@@ -314,6 +315,33 @@ With `enter_action: select`, Enter shows the agent's window and focuses that
 window's sidebar. This keeps `j`/`k` available for scanning; press `o` when you
 want to enter the selected agent pane. If the target window has no sidebar,
 Enter falls back to focusing its agent pane. Mouse clicks always focus the pane.
+
+### Global TODOs
+
+The left sidebar can show a global TODO list in a fixed footer below the agent
+list. Add `~/.workmux/todos.json` using this format:
+
+```json
+{
+  "max_visible": 5,
+  "max_lines_per_item": 2,
+  "todos": [
+    { "text": "Review the API changes", "done": false },
+    { "text": "Run the integration tests", "done": false },
+    { "text": "Already completed", "done": true }
+  ]
+}
+```
+
+Every sidebar panel reads the same file. `max_visible` controls how many
+incomplete items are shown (default `3`, maximum `20`), while
+`max_lines_per_item` controls the rows available to each item (default `2`,
+maximum `10`). Additional items use a `+N more` summary. Items wrap
+automatically to the sidebar width and support explicit newlines with `\n`.
+Longer items end with an ellipsis.
+Completed and blank items are hidden. Press `T` to collapse or expand the
+footer. The file is reloaded automatically while the sidebar is active. Global
+TODOs are not shown in the horizontal top-bar layout.
 
 ### Session filter
 
