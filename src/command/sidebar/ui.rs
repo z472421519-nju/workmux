@@ -467,22 +467,33 @@ pub fn render_sidebar(f: &mut Frame, app: &mut SidebarApp) {
     f.render_widget(block, area);
     let inner = render_template_error(f, app, inner);
 
-    let (list_area, filter_area) = if app.filter_mode == SidebarFilterMode::Session {
-        if inner.height > 1 {
-            let list = Rect::new(inner.x, inner.y, inner.width, inner.height - 1);
-            let filter = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
-            (list, Some(filter))
-        } else {
-            (inner, None)
-        }
-    } else {
-        (inner, None)
-    };
+    let filter_height =
+        u16::from(app.filter_mode == SidebarFilterMode::Session && inner.height > 1);
+    let content_height = inner.height.saturating_sub(filter_height);
+    let desired_todo_height = todo_panel_height(app, inner.width);
+    let min_list_height = app.selected_item_height();
+    let todo_height = desired_todo_height.min(content_height.saturating_sub(min_list_height));
+    let list_height = content_height.saturating_sub(todo_height);
+    let list_area = Rect::new(inner.x, inner.y, inner.width, list_height);
+    let todo_area = (todo_height > 0)
+        .then(|| Rect::new(inner.x, inner.y + list_height, inner.width, todo_height));
+    let filter_area = (filter_height > 0).then(|| {
+        Rect::new(
+            inner.x,
+            inner.y + content_height,
+            inner.width,
+            filter_height,
+        )
+    });
     app.list_area = list_area;
 
     match app.layout_mode {
         SidebarLayoutMode::Compact => render_compact_list(f, app, list_area),
         SidebarLayoutMode::Tiles => render_tile_list(f, app, list_area),
+    }
+
+    if let Some(todo_rect) = todo_area {
+        render_todo_panel(f, app, todo_rect);
     }
 
     if let Some(filter_rect) = filter_area {
@@ -502,6 +513,117 @@ pub fn render_sidebar(f: &mut Frame, app: &mut SidebarApp) {
     }
 
     render_exit_confirmation(f, app);
+}
+
+fn todo_panel_height(app: &SidebarApp, width: u16) -> u16 {
+    if !app.todo_panel.is_visible() {
+        return 0;
+    }
+    if !app.todo_panel.expanded {
+        return 1;
+    }
+    if app.todo_panel.error.is_some() {
+        return 2;
+    }
+    let item_width = width.saturating_sub(2) as usize;
+    let visible_rows = app
+        .todo_panel
+        .items
+        .iter()
+        .take(app.todo_panel.max_visible)
+        .map(|item| {
+            wrap_todo_text(item, item_width, app.todo_panel.max_lines_per_item).len() as u16
+        })
+        .fold(0u16, u16::saturating_add);
+    let more = u16::from(app.todo_panel.items.len() > app.todo_panel.max_visible);
+    1 + visible_rows + more
+}
+
+fn render_todo_panel(f: &mut Frame, app: &SidebarApp, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+
+    let marker = if app.todo_panel.expanded {
+        "▾"
+    } else {
+        "▸"
+    };
+    let count = app.todo_panel.items.len();
+    let header = truncate_to_width(
+        &format!(
+            "─ {marker} TODO {count} {}",
+            "─".repeat(area.width as usize)
+        ),
+        area.width as usize,
+    );
+    f.render_widget(
+        Line::from(Span::styled(
+            header,
+            Style::default()
+                .fg(app.palette.border)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+
+    if !app.todo_panel.expanded || area.height == 1 {
+        return;
+    }
+
+    if let Some(error) = &app.todo_panel.error {
+        let text = truncate_to_width(error, area.width.saturating_sub(2) as usize);
+        f.render_widget(
+            Line::from(vec![
+                Span::styled("! ", Style::default().fg(app.palette.warning)),
+                Span::styled(text, Style::default().fg(app.palette.warning)),
+            ]),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
+        return;
+    }
+
+    let item_width = area.width.saturating_sub(2) as usize;
+    let mut row = 1;
+    for item in app.todo_panel.items.iter().take(app.todo_panel.max_visible) {
+        for (line_index, text) in
+            wrap_todo_text(item, item_width, app.todo_panel.max_lines_per_item)
+                .into_iter()
+                .enumerate()
+        {
+            if row >= area.height {
+                break;
+            }
+            let marker = if line_index == 0 { "□ " } else { "  " };
+            f.render_widget(
+                Line::from(vec![
+                    Span::styled(marker, Style::default().fg(app.palette.accent)),
+                    Span::styled(text, Style::default().fg(app.palette.text)),
+                ]),
+                Rect::new(area.x, area.y + row, area.width, 1),
+            );
+            row += 1;
+        }
+        if row >= area.height {
+            break;
+        }
+    }
+
+    if app.todo_panel.items.len() > app.todo_panel.max_visible
+        && area.height >= todo_panel_height(app, area.width)
+    {
+        let more = format!(
+            "+{} more",
+            app.todo_panel.items.len() - app.todo_panel.max_visible
+        );
+        f.render_widget(
+            Line::from(Span::styled(
+                truncate_to_width(&more, area.width as usize),
+                Style::default().fg(app.palette.dimmed),
+            )),
+            Rect::new(area.x, area.bottom() - 1, area.width, 1),
+        );
+    }
 }
 
 fn render_exit_confirmation(f: &mut Frame, app: &SidebarApp) {
@@ -763,6 +885,66 @@ fn truncate_to_width(s: &str, max_width: usize) -> String {
         width += ch_width;
     }
     out
+}
+
+fn wrap_todo_text(text: &str, max_width: usize, max_lines: usize) -> Vec<String> {
+    if max_width == 0 || max_lines == 0 {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0;
+    let mut truncated = false;
+
+    for ch in text.chars().filter(|ch| *ch != '\r') {
+        if ch == '\n' {
+            lines.push(current.trim_end().to_string());
+            current.clear();
+            current_width = 0;
+            if lines.len() == max_lines {
+                truncated = true;
+                break;
+            }
+            continue;
+        }
+
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
+        if current_width + char_width > max_width {
+            lines.push(current.trim_end().to_string());
+            current.clear();
+            current_width = 0;
+            if lines.len() == max_lines {
+                truncated = true;
+                break;
+            }
+            if ch.is_whitespace() {
+                continue;
+            }
+        }
+
+        current.push(ch);
+        current_width += char_width;
+    }
+
+    if !truncated && lines.len() < max_lines && (!current.is_empty() || lines.is_empty()) {
+        lines.push(current.trim_end().to_string());
+    }
+
+    if truncated && let Some(last) = lines.last_mut() {
+        *last = ellipsize_to_width(last, max_width);
+    }
+
+    lines
+}
+
+fn ellipsize_to_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut text = truncate_to_width(text.trim_end(), max_width.saturating_sub(1));
+    text.push('…');
+    text
 }
 
 /// Compact single-line-per-agent list (original layout).
@@ -1225,6 +1407,125 @@ mod tests {
         assert!(text.contains("sidebar-groups"));
         assert!((0..12).any(|y| app.hit_test(1, y) == Some(5)));
         assert_eq!(app.hit_test(1, 11), None);
+    }
+
+    #[test]
+    fn todo_footer_is_fixed_below_agents_and_limits_visible_items() {
+        let mut app = tile_app();
+        app.agents.truncate(1);
+        app.list_state.select(Some(0));
+        app.todo_panel = super::super::todo::TodoPanel::with_items(&[
+            "Review API",
+            "Run tests",
+            "Update docs",
+            "Ship release",
+            "Notify team",
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(36, 12)).unwrap();
+
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+
+        let rows: Vec<String> = (0..12)
+            .map(|y| buffer_row(terminal.backend().buffer(), y))
+            .collect();
+        assert!(rows[7].contains("TODO 5"));
+        assert!(rows[8].contains("Review API"));
+        assert!(rows[9].contains("Run tests"));
+        assert!(rows[10].contains("Update docs"));
+        assert!(rows[11].contains("+2 more"));
+        assert_eq!(app.hit_test(1, 8), None);
+    }
+
+    #[test]
+    fn todo_footer_wraps_each_item_to_two_rows() {
+        let mut app = tile_app();
+        app.agents.truncate(1);
+        app.list_state.select(Some(0));
+        app.todo_panel = super::super::todo::TodoPanel::with_items(&[
+            "这是一个很长的待办事项，需要自动换行并省略后续内容",
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+
+        let rows: Vec<String> = (0..8)
+            .map(|y| buffer_row(terminal.backend().buffer(), y))
+            .collect();
+        assert!(rows[5].contains("TODO 1"));
+        assert!(rows[6].contains('这'));
+        assert!(rows[6].contains('待'));
+        assert!(rows[7].contains('…'));
+    }
+
+    #[test]
+    fn todo_text_supports_manual_newlines_and_unicode_width() {
+        assert_eq!(
+            wrap_todo_text("第一行\n第二行", 12, 2),
+            vec!["第一行".to_string(), "第二行".to_string()]
+        );
+        assert_eq!(
+            wrap_todo_text("一二三四五六七八九", 6, 2),
+            vec!["一二三".to_string(), "四五…".to_string()]
+        );
+        assert_eq!(
+            wrap_todo_text("first\nsecond\nthird", 12, 2),
+            vec!["first".to_string(), "second…".to_string()]
+        );
+    }
+
+    #[test]
+    fn todo_footer_respects_configured_visible_limit() {
+        let mut app = tile_app();
+        app.agents.truncate(1);
+        app.list_state.select(Some(0));
+        app.todo_panel =
+            super::super::todo::TodoPanel::with_items(&["One", "Two", "Three", "Four"]);
+        app.todo_panel.max_visible = 2;
+        app.todo_panel.max_lines_per_item = 1;
+        let mut terminal = Terminal::new(TestBackend::new(36, 10)).unwrap();
+
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+
+        let text = (0..10)
+            .map(|y| buffer_row(terminal.backend().buffer(), y))
+            .collect::<String>();
+        assert!(text.contains("One"));
+        assert!(text.contains("Two"));
+        assert!(!text.contains("Three"));
+        assert!(text.contains("+2 more"));
+    }
+
+    #[test]
+    fn collapsed_todo_footer_uses_one_row() {
+        let mut app = tile_app();
+        app.agents.truncate(1);
+        app.list_state.select(Some(0));
+        app.todo_panel = super::super::todo::TodoPanel::with_items(&["Review API", "Run tests"]);
+        app.todo_panel.expanded = false;
+        let mut terminal = Terminal::new(TestBackend::new(36, 8)).unwrap();
+
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+
+        assert!(buffer_row(terminal.backend().buffer(), 7).contains("TODO 2"));
+        assert!(!buffer_row(terminal.backend().buffer(), 7).contains("Review API"));
+    }
+
+    #[test]
+    fn todo_footer_yields_to_the_selected_tile_in_short_sidebars() {
+        let mut app = tile_app();
+        app.agents.truncate(1);
+        app.list_state.select(Some(0));
+        app.todo_panel =
+            super::super::todo::TodoPanel::with_items(&["Review API", "Run tests", "Update docs"]);
+        let mut terminal = Terminal::new(TestBackend::new(36, 4)).unwrap();
+
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+
+        let text = (0..4)
+            .map(|y| buffer_row(terminal.backend().buffer(), y))
+            .collect::<String>();
+        assert!(text.contains("auth-refresh"));
+        assert!(!text.contains("TODO"));
     }
 
     #[test]

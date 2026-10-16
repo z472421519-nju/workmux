@@ -402,6 +402,7 @@ fn handle_key_press(
         (KeyCode::Char('v'), _) => app.toggle_layout_mode(),
         (KeyCode::Char('z'), _) => app.toggle_sleeping(),
         (KeyCode::Char('f'), _) => app.toggle_filter_mode(),
+        (KeyCode::Char('t'), _) => app.toggle_todos(),
         _ => {}
     }
 }
@@ -562,5 +563,15 @@ mod tests {
 
         assert!(app.should_quit);
         assert_eq!(app.quit_reason.as_deref(), Some("confirmed user exit"));
+    }
+
+    #[test]
+    fn t_toggles_todo_footer() {
+        let mut app = test_app();
+        assert!(app.todo_panel.expanded);
+
+        handle_key_press(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
+
+        assert!(!app.todo_panel.expanded);
     }
 }

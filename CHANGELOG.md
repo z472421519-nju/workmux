@@ -23,6 +23,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 
 ## Unreleased
 
+- Show global `~/.workmux/todos.json` items in a collapsible footer below the sidebar agent list, with configurable item/line limits, automatic wrapping, and explicit newline support.
 - Fix named agents with custom config directories using the wrong configuration inside sandboxes, including coordinator and RPC-spawned agents. ([#288](https://github.com/raine/workmux/pull/288))
 
 ## v0.1.263 (2026-09-16)
