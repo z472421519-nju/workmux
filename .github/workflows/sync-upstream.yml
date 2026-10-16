@@ -1,0 +1,42 @@
+name: Sync upstream and rebase TODO
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workmux-upstream-rebase
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    if: github.repository == 'z472421519-nju/workmux'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: workmux-local
+          fetch-depth: 0
+          ssh-key: ${{ secrets.UPSTREAM_SYNC_SSH_KEY }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux bubblewrap
+
+      - name: Rebase, verify, and publish
+        env:
+          WORKMUX_UPSTREAM_URL: https://github.com/raine/workmux.git
+          WORKMUX_VERIFY_UNCHANGED: ${{ github.event_name == 'workflow_dispatch' }}
+        run: bash scripts/sync-upstream.sh
